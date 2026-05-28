@@ -810,10 +810,18 @@ pub fn apply_switch_defaults(
         .map(|s| s.trim().to_string())
         .filter(|s| !s.is_empty());
 
+    // Extract base_url from provider settings_config
+    let base_url = settings_config
+        .get("base_url")
+        .and_then(|v| v.as_str())
+        .map(|s| s.trim().to_string())
+        .filter(|s| !s.is_empty());
+
     let current = get_model_config()?.unwrap_or_default();
     let merged = HermesModelConfig {
         default: first_model_id.or(current.default.clone()),
         provider: Some(provider_id.to_string()),
+        base_url: base_url.or(current.base_url),
         ..current
     };
     set_model_config(&merged)
@@ -1806,6 +1814,67 @@ custom_providers:
             // First entry's id is whitespace-only → blank → fall back to old default
             // (we intentionally don't scan past the first entry for a default).
             assert_eq!(model.default.as_deref(), Some("prev-default"));
+        });
+    }
+
+    #[test]
+    #[serial]
+    fn apply_switch_defaults_updates_base_url_from_provider() {
+        with_test_home(|| {
+            // Seed an existing `model:` section with old provider's base_url
+            let initial = HermesModelConfig {
+                default: Some("old-model".to_string()),
+                provider: Some("old-provider".to_string()),
+                base_url: Some("https://old-provider.example.com/v1".to_string()),
+                ..Default::default()
+            };
+            set_model_config(&initial).unwrap();
+
+            // Switch to new provider with different base_url
+            let settings = serde_json::json!({
+                "base_url": "https://new-provider.example.com/v1",
+                "api_key": "sk-new",
+                "models": [{ "id": "new-model", "context_length": 200000 }]
+            });
+            apply_switch_defaults("new-provider", &settings).unwrap();
+
+            let model = get_model_config().unwrap().unwrap();
+            assert_eq!(model.provider.as_deref(), Some("new-provider"));
+            assert_eq!(model.default.as_deref(), Some("new-model"));
+            // base_url should be updated to new provider's base_url
+            assert_eq!(
+                model.base_url.as_deref(),
+                Some("https://new-provider.example.com/v1")
+            );
+        });
+    }
+
+    #[test]
+    #[serial]
+    fn apply_switch_defaults_preserves_base_url_when_not_in_settings() {
+        with_test_home(|| {
+            // Seed an existing `model:` section with base_url
+            let initial = HermesModelConfig {
+                default: Some("old-model".to_string()),
+                provider: Some("old-provider".to_string()),
+                base_url: Some("https://existing.example.com/v1".to_string()),
+                ..Default::default()
+            };
+            set_model_config(&initial).unwrap();
+
+            // Switch to provider without base_url in settings_config
+            let settings = serde_json::json!({
+                "models": [{ "id": "new-model" }]
+            });
+            apply_switch_defaults("new-provider", &settings).unwrap();
+
+            let model = get_model_config().unwrap().unwrap();
+            assert_eq!(model.provider.as_deref(), Some("new-provider"));
+            // base_url should be preserved from old config
+            assert_eq!(
+                model.base_url.as_deref(),
+                Some("https://existing.example.com/v1")
+            );
         });
     }
 
